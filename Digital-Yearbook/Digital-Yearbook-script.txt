@@ -1,0 +1,530 @@
+//INTRO
+//this script proliferates solicitations for people in your network to write nice things about each other.
+//whenever anyone writes about someone else, the chance that they are selected to be written about increases.
+//whenever someone can't think of a nice thing to write about someone, they can "reroll the dice" and get back another person.
+//no one gets asked to write about someone else more than once.
+//this can end in two ways. either it fizzles out, or else everyone has "skipped" or written about everyone else.
+
+//IMPORTANT
+//1) You need to connect this script to your response spreadsheet. do that by copying the spreadsheet ID and pasting it inside the "" in
+//the line below that says "var SSID =". you can find the spreadsheet ID by going to the response spreadsheet and clicking inside the
+//address bar. the ID is the part after "d/" and before the next "/". it's a long string of letters and numbers.
+//2) Don't forget to edit the emails that this form automatically sends. change the sender email address and signature at the very least :)
+//find those automatic emails in the script below. they are the heavily indented red text parts. 
+//3) Replace "REPLACE-THIS-TEXT-WITH-FORM-LINK" with the link to your "The Digital Yearbook" form (not the "The Digital Yearbook Starter" form). 
+//do that by opening the "The Digital Yearbook" form and clicking on "Send". click the link icon which looks like <=> and then click on "Copy". 
+//now you can CNTL + V to paste the link in the right places below in this script.
+
+//variables that get used throughout
+var QUESTIONS = 4; //only 4 questions in form
+var SSID = ""; //ID of the spreadsheet, so JS can reference and write
+
+
+//main function
+function responseTrigger() {
+  var respondent = analyzeResponse();
+  //clearResponseSheet(); //include this if you're debugging before roll out -- helps you to reset the spreadsheet
+  if (respondent != "nothing") {
+    if (getExp(respondent) == getWroteOf(respondent)) {
+      updateSelectionLikelihood(respondent);
+    }
+    sendRecent(respondent);
+    responseTriggerForm(respondent);
+  }
+}
+
+
+//time-based form sending
+function timeTrigger() {
+  changeTimeMarker();
+  timeTriggerForm();
+}
+
+
+function clearResponseSheet() {
+  SpreadsheetApp.openById(SSID).getSheets()[0].getRange(1,3,1,20).clear();
+  SpreadsheetApp.openById(SSID).getSheets()[0].getRange(2,1,40,40).clear();
+  SpreadsheetApp.flush();
+}
+
+function sendRecent(user) {
+  var email = getEmail(user);
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getDataRange().getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][1] == email) {
+      var message = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,6).getValue();
+      var qType = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,7).getValue();
+      var question = questionFromType(qType);
+      SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,6).clear();
+      SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,7).clear();
+      SpreadsheetApp.flush();
+    }
+  }
+  if (message.length > 0) {
+    MailApp.sendEmail(email, "The latest thing said about you in the GSB2015 Digital Yearbook", "When asked, '" + question + "'   " + message);
+  }
+}
+
+function analyzeResponse() {
+  //get the most recent row of responses
+  var data = SpreadsheetApp.openById(SSID).getSheets()[0].getDataRange().getValues();
+  var mostRecent = data[1][0];
+  //extract the most recent response to the form and its position in the array
+  var formResponses = FormApp.getActiveForm().getResponses();
+  mostRecent = formResponses[0].getTimestamp();
+  for (var i = 1; i < formResponses.length; ++i) {
+    if (formResponses[i].getTimestamp() > mostRecent) {
+      mostRecent = formResponses[i].getTimestamp();
+      var row = formResponses[i].getItemResponses();
+      var recentIndex = i;
+    }
+  }
+  //log response row members for friendly debugging
+  for (var j = 0; j < row.length; j++) {
+    var itemResponse = row[j];
+    Logger.log('Last response to the question "%s" was "%s"',
+               itemResponse.getItem().getTitle(),
+               itemResponse.getResponse());
+  }
+  //find the important data in the row
+  var email = formResponses[recentIndex].getRespondentEmail();
+  var respondent = nameFromEmail(email);
+  var rNumber = 1;
+  var skipOrNot = row[0].getResponse(); //coded separately from 'if' because could add other options
+  if (skipOrNot == "Skip") {
+    //if they elected not to write about this person, save skip and send them an alternative.
+    var newName = getName(respondent);
+    saveWroteOf(respondent, newName);
+    var SV = getSV(respondent);
+    sendAltForm(respondent, newName, SV);
+  } else {
+    //who did they write about?
+    var name = getWroteOf(respondent);
+    for (var j = 1; j < row.length; ++j) {
+      if (row[j].getResponse().length > 0) {
+        var response = row[j].getResponse();
+        var responseQ = row[j].getItem().getTitle();
+        //var responseQ = SpreadsheetApp.openById(SSID).getSheets()[0].getRange(1,j+1).getValue();
+        var responseQType = questionType(responseQ);
+        if (responseQType == 5) {
+          //particular response is to prompt preference question
+          savePromptPref(respondent,response);
+        } else {
+          //particular response is to query on WroteOf
+          rNumber = rNumber + 1;
+          saveToDB(respondent,name,responseQType,response);
+          updateSaids(respondent,name,responseQType,response);
+        }
+      }
+    }
+  }
+  //if they didn't submit any response or skipped, trigger main to stop
+  if (rNumber == 1) {
+    respondent = "nothing";
+  }
+  return respondent;
+}
+
+function sendAltForm(user,name,SV) {
+    var email = getEmail(user);
+    //email = "alec2@stanford.edu";
+    MailApp.sendEmail({  
+       to: email,
+       subject:         "New person to write about in the GSB2015 Digital Yearbook",
+       htmlBody:        "As per your request, you have someone new to write about." + "<br>" +
+                        "Answer one or more query about " + '<font size="4">' + name + '</font>' + ", and we'll send you an email showing what was said most recently about you. " + "<br>" +
+                        'You can always skip writing about this person with the "Skip" button in the form.' + "<br>" +
+                        "Your Chance Factor is " + SV + "." + "<br>" + 
+                        "<br>" +
+                        '<font size="5"><a href="https://docs.google.com/a/stanford.edu/forms/d/11wc1RiYeixGtzWFnMJpUWsIKgTndXfGys0tr2uO2vvc/viewform?usp=send_form">Write about ' + name +' here</a></font>' + 
+                        "<br>" +
+                        "-alec" + "<br>" +
+                        '<a href="mailto:alec2@stanford.edu">feedback/questions</a>'
+      });
+}
+
+//supporter function. saves user prompt preferences.
+function savePromptPref(respondent,preference) {
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getDataRange().getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == respondent) {
+      if (preference == 'Whenever anyone writes about me') {
+        preference = 1;
+      } else if (preference == '2x daily') {
+        preference = 2;
+      } else if (preference == '1x daily') { 
+        preference = 3;
+      } else if (preference == 'Opt out') {
+        preference = 4;
+      } else {
+        preference = 5;
+      }
+      SpreadsheetApp.openById(SSID).getSheets()[parseInt(1)].getRange(i+1,3).setValue(preference);
+      SpreadsheetApp.flush();
+    }
+  }
+}
+
+//supporter function. retrieves name from email.
+function nameFromEmail(email) {
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getDataRange().getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][1] == email) {
+      var name = data[i][0];
+    }
+  }
+  return name;
+}
+
+//supporter function. puts response into appropriate database.
+function saveToDB(respondent,name,qType,response) {
+  if (qType > 0 && qType < 5) {
+    var responseData = SpreadsheetApp.openById(SSID).getSheets()[qType+1].getDataRange().getValues();
+    for (var k = 1; k < responseData.length; ++k) {
+      if (responseData[k][0] == respondent) {
+        for (var m = 1; m < responseData.length; ++m) {
+          if (responseData[0][m] == name) {
+            var prevResponse = SpreadsheetApp.openById(SSID).getSheets()[parseInt(qType+1)].getRange(k+1,m+1).getValue();
+            SpreadsheetApp.openById(SSID).getSheets()[parseInt(qType+1)].getRange(k+1,m+1).setValue(respondent + " said, '" + response + "'  " + prevResponse);
+            SpreadsheetApp.flush();
+            m = responseData.length;
+            k = responseData.length;
+          }
+        }
+      }
+    }
+  }
+}
+
+function updateSaids(respondent,name,qType,response) {
+  if (qType > 0 && qType < 5) {
+    var data = SpreadsheetApp.openById(SSID).getSheets()[1].getDataRange().getValues();
+    for (var i = 0; i < data.length; ++i) {
+      if (data[i][0] == name) {
+        SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,6).setValue(respondent + " said, '" + response + "'");
+        SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,7).setValue(qType);
+        SpreadsheetApp.flush();
+        i = data.length;
+      }
+    }
+  }
+}
+
+function updateSelectionLikelihood(respondent) {
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getDataRange().getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == respondent) {
+      var SV = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,5).getValue();
+      if (SV < 4) {
+        SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+1,5).setValue(SV+0.2);
+        SpreadsheetApp.flush();
+        i = data.length;
+      }
+    }
+  }
+}
+
+function responseTriggerForm(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var userData = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  for (var i = 1; i < userData.length; ++i) {
+    if (userData[i][0] == user) {
+      var sendTo = userData[i][7];
+      if (sendTo.length > 0) {
+        SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+2,8).clear();
+        SpreadsheetApp.flush();
+        for (var j = 1; j < userData.length; ++j) {
+          if (userData[j][0] == sendTo) {
+            var preference = userData[j][2];
+            if (preference == 1) {
+              var email = userData[j][1];
+              var name = getName(sendTo);
+              saveExp(sendTo,name);
+              var SV = userData[j][4];
+              j = userData.length;
+              sendForm(sendTo,email,name,SV);
+            }
+          }
+        }
+      }
+      if (userData[i][2] == 5) {
+        var email = userData[i][1];
+        var name = getName(user);
+        saveExp(user,name);
+        var SV = userData[i][4];
+        i = userData.length;
+        sendFormNoMostRecent(user,email,name,SV);
+      }
+      i = userData.length;
+    }
+  }
+}
+
+//keeps the solicitations going
+function timeTriggerForm() {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var userData = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,4).getValues();
+  var timeMarker = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,3).getValue();
+  for (var i = 0; i < userData.length; ++i) {
+    var preference = userData[i][2];
+    if (timeMarker == 1) {
+      if (preference == 2) {
+        var recipient = userData[i][0];
+        var email = userData[i][1];
+        var name = getName(recipient);
+        saveExp(recipient,name);
+        var SV = userData[i][4];
+        sendForm(recipient,email,name,SV);
+      }
+    } else {
+      if (preference == 2 || preference == 3) {
+        var recipient = userData[i][0];
+        var email = userdata[i][1];
+        var name = getName(recipient);
+        saveExp(recipient,name);
+        var SV = userData[i][4];
+        sendForm(recipient,email,name,SV);
+      }
+    }
+  }
+}
+
+//this function finds the SV value associated with a given user
+function getSV(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  var SV = "0";
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      SV = data[i][4];
+      i = data.length; //exit the loop if we found our info
+    }
+  }
+  return SV;
+}
+
+function saveExp(user,name) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+2,8).setValue(name);
+      SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+2,9).setValue(name);
+      SpreadsheetApp.flush();
+      i = data.length;
+    }
+  }
+}
+
+function getExp(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  var exp = "nobody";
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      exp = data[i][8];
+      i = data.length;
+    }
+  }
+  return exp;
+}
+
+function saveWroteOf(user,name) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      SpreadsheetApp.openById(SSID).getSheets()[1].getRange(i+2,8).setValue(name);
+      SpreadsheetApp.flush();
+      i = data.length;
+    }
+  }
+}
+
+function getWroteOf(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  var wroteOf = "nobody";
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      wroteOf = data[i][7];
+      i = data.length;
+    }
+  }
+  return wroteOf;
+}
+
+function getEmail(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      return data[i][1];
+      i = data.length;
+    }
+  }
+}
+
+function getRespPref(user) {
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,12).getValues();
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == user) {
+      return data[i][2];
+      i = data.length;
+    }
+  }
+}
+
+//looks at specific time marker cell in SS and sets to 1 if "" or to 2 if 1
+function changeTimeMarker() {
+  var timeMarker = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,3).getValue();
+  if (timeMarker == 1) {
+    SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,3).setValue(2);
+  } else {
+    SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,3).setValue(1);
+  }
+}
+
+
+//selects a recipient randomly for someone to write about
+function getName(user) {
+  var maxSN = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,1).getValue();
+  var endRow = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(1,2).getValue();
+  var data = SpreadsheetApp.openById(SSID).getSheets()[1].getRange(2,1,endRow,4).getValues();
+  var choice = Math.random() * maxSN; //rnd bt 0 and MaxSN
+  choice = choiceFromRand(choice,data); //updates choice to be name corresponding to position of rnd in group of names
+  var count = 0;
+  while (checkChoice(user,choice,count) == false) {
+    choice = choiceFromRand(Math.random() * maxSN, data);
+    ++count;
+  }
+  if (count <= 400) {
+    return choice;
+  } else {
+    return "filled out all";
+  }
+}
+
+
+//takes a random float between 0 and MaxSN and finds the corresponding person
+//this isn't just a simple integer conversion, because numerical spacing between people is variable float, not up by 1 each time
+function choiceFromRand(choice,data) {
+  for (var i = 0; i < data.length; ++i) {
+    if (choice <= data[i][3] && data[i][2] != 4) { //we know we've found the right person when our rnd is smaller than the person's float
+      return data[i][0];
+    }
+  }
+  return "nobody";
+}
+
+
+//make sure the user hasn't already filled out any info for this choice
+function checkChoice(user, choice, count) {
+  var choiceOk = true;
+  if (count < 400) {
+    if (user != choice) {
+      for (var i = 2; i < 6; ++i) {
+        var data = SpreadsheetApp.openById(SSID).getSheets()[i].getDataRange().getValues();
+        for (var j = 0; j < data.length; ++j) {
+          if (data[j][0] == user) {
+            for (var k = 0; k < data.length; ++k) {
+              if (data[0][k] == choice) {
+                if (data[j][k].length > 0) {
+                  choiceOk = false;
+                  k = data.length;
+                  j = data.length;
+                  i = 6;
+                }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      choiceOk = false;
+    }
+  }
+  return choiceOk;
+}
+
+
+//check whether the user has had this question about this person before
+function checkQuestion(question, user,name) {
+  var qType = questionType(question);
+  var qIsNew = false;
+  if (qType == 0) {
+    qIsNew = false;
+  }  else {
+    var qIsNew = true;
+  }
+  return qIsNew;
+}
+
+function questionType(question) {
+  var type = 0;
+  var qStart = question.substring(0, 3)
+  if (qStart == "Whe") {
+    type = 1;
+  } else if (qStart == "Som") {
+    type = 2;
+  } else if (qStart == "A g") { 
+    type = 3;
+  } else if (qStart == "Wha") {
+    type = 4;
+  } else if (qStart == "How") {
+    type = 5;
+  }
+  return type;
+}
+
+function questionFromType(qType) {
+  if (qType == 1) {
+    var question = "Where do you see this person in five years?";
+  } else if (qType == 2) {
+    var question = "Something that this person is really good at is:";
+  } else if (qType == 3) { 
+    var question = "A great memory I have of this person is:";
+  } else if (qType == 4) {
+    var question = "What kind of job should this person have at some point, and why?";
+  } else {
+    var question = "this is an error. send an email to alec. ...no, seriously, you aren't supposed to get this message";
+  }
+  return question;
+}
+
+function sendFormNoMostRecent(user,email,name,SV) {
+  //email = "alec2@stanford.edu"; //overwrite email if need to debug
+  MailApp.sendEmail({  
+       to: email,
+       subject: user + ", Write about a classmate in the GSB2015 Digital Yearbook",
+       htmlBody:        "Answer one or more query about " + name + ", and we'll increase your likelihood to get written about. " + "<br>" +
+                        "If you don't have good information about " + name + " or would rather not write about that person, " + 
+                        'use the "Skip" button in the form and ' + "we'll send you another person to write about." + "<br>" +
+                        "If you write about the first person we send you without skipping, we increase the chances you get feedback from others!" + "<br>" +
+                        "You can tell how likely someone is to write about you by your Chance Factor. Everyone starts at 1.  Yours is " + SV + "." + "<br>" + 
+                        "<br>" +
+                        '<font size="5"><a href="REPLACE-THIS-TEXT-WITH-FORM-LINK">Write about ' + name +' here</a></font>' + 
+                        "<br>" +
+                        "-alec" + "<br>" +
+                        '<a href="mailto:alec2@stanford.edu">feedback/questions</a>'
+      });
+}
+
+function sendForm(user,email,name,SV) {
+  //email = "alec2@stanford.edu"; //overwrite email if need to debug
+  MailApp.sendEmail({  
+       to: email,
+       subject: user + ", A classmate wrote about you in the GSB2015 Digital Yearbook.  Want to read what they said?",
+       htmlBody:        "Answer one or more query about " + name + ", and we'll send you an email showing what was said most recently about you. " + "<br>" +
+                        "If you don't have good information about " + name + " or would rather not write about that person, " + 
+                        'use the "Skip" button in the form and ' + "we'll send you another person to write about." + "<br>" +
+                        "If you write about the first person we send you without skipping, we increase the chances you get feedback from others!" + "<br>" +
+                        "You can tell how likely someone is to write about you by your Chance Factor. Everyone starts at 1.  Yours is " + SV + "." + "<br>" + 
+                        "<br>" +
+                        '<font size="5"><a href="REPLACE-THIS-TEXT-WITH-FORM-LINK">Write about ' + name +' here</a></font>' + 
+                        "<br>" +
+                        "-alec" + "<br>" +
+                        '<a href="mailto:alec2@stanford.edu">feedback/questions</a>'
+      });
+}
