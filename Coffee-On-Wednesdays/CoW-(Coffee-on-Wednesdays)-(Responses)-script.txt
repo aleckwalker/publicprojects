@@ -1,0 +1,477 @@
+//Intro
+//this script attempts to foster better interpersonal relationships within communities and teams by matching people for 1-on-1 coffee chats
+//based on their availability during the day on Wednesday. whenever anyone submits a form response, the script will check whether someone else
+//has submitted an overlapping time and has yet to receive a match. if so, the two will be matched, and a calendar invite will automatically be
+//sent to both. 
+
+
+//Important
+//1) ADMIN_EMAIL_ADDRESS and REWARD_EMAIL_ADDRESS indicate who is responsible for CoW and for any rewards that are issued from using CoW.
+//2) if you want people to get a reward for using CoW x number of times, change the LOYALTY_FACTOR value below.
+//3) scroll down to the "sendInvite()" function and edit the text inside the quotations to suit your community. for example, you probably don't 
+//want to tell each match to meet at the particular coffee shop connected to the community this was originally built for. 
+
+
+/////////////////////////
+var TEST_MODE = false;  //indictate whether executing for real or on test data
+//WARNING: if on test mode, check functions starting at getNewData to make sure they reference the right rows of test data before running anything!
+////////////////////////
+
+//initialize global variables
+var TODAY_DATE = new Date();                          //marker to put in a cell to indicate when something happened in the code
+var LOYALTY_FACTOR = 4;                               //every x meetings the people get a free reward
+var ADMIN_EMAIL_ADDRESS = "alec2@stanford.edu";    //who gets emails with complaints ect?
+var REWARD_EMAIL_ADDRESS = "alec2@stanford.edu";   //someone gets a list of students getting rewards each week?  (the staff could get this, or just check their SS)
+var REWARD_PICKUP = "You'll find your reward in your mail folder!";   //change this up here if incentive rewards go somewhere else
+
+
+//these functions run anytime anyone submits a request
+function onFormSubmit() {  
+  Logger.clear();               //erase debug data from last run (access logger via CMD+ENTER)
+  markNewDataDuplicates();      //before doing any matching, flag the duplicate requests so people don't get double-booked
+  match(/* pickiness */ false); //run the matching magic! see comments on matching conditions commented in the match() function below
+  sendInvite();                 //mail out the actual invitations
+  var sheet = selectForm();     //put the viewer back on the 1st tab of worksheet
+}
+
+//these functions run every week on Tuesday morning at midnight
+function wednesdaySuperEarly() {
+  //match(false);           //un-comment these two lines to enable repeat meets as a last resort to prevent no matches
+  //sendInvite();           //un-comment these two lines to enable repeat meets as a last resort to prevent no matches
+  sendRewardData();         //send the email addresses and Wednesday date to the admin 
+  updateRewardSS();         //puts reward info on SS for the staff who gives out gift cards
+  wipeRewardData();         //clear rewards data from 4th tab of worksheet
+  sendNoMatch();            //alert those with no match this week of their ... condition
+  clearFormResponses();     //erase all the requests in the 1st tab of worksheet to prepare for the coming week
+  var sheet = selectForm(); //put the viewer back on the 1st tab of worksheet
+}
+
+
+
+
+
+////////////////////////////////////////////////////
+//these functions run anytime anyone submits
+////////////////////////////////////////////////////
+
+//Finds and marks any duplicate entries in the new data
+function markNewDataDuplicates() {
+  var sheet = selectForm();
+  var data = getNewSignups();
+  var startRow = firstNewDataRowForm();
+  //for each row, if a row ahead of it matches, mark the one ahead with 'duplicate' in the time field
+  for (var i = 0; i < data.length; ++i) {
+    var row = data[i];
+    for (var j = i+1; j < data.length; ++j) {
+      var compRow = data[j];
+      if (row[1] == compRow[1] && row[2] == compRow[2]) {
+        sheet.getRange(startRow + j, 8).setValue("duplicate");
+        sheet.getRange(startRow + j, 4).setValue("duplicate");
+        SpreadsheetApp.flush(); //actually update the spreadsheet before running more code
+      }
+    }
+  }
+}
+
+//matching magic!
+function match(pickiness) {
+  var sheet = selectMatches();
+  var firstEmptyRow = firstEmptyRowMatches();
+  var sheet = selectForm();
+  var data = getNewSignups();
+  var startRow = firstNewDataRowForm();
+  for (var i = 0; i < data.length; ++i) {
+    //get the time and alias of a singup
+    var timeOne = data[i][1];
+    var emailOne = data[i][2];
+    var dupCheckOne = data[i][7];
+    //conditions to consider this reuest:  
+    if (dupCheckOne != "duplicate" &&                         //not a duplicate
+            timeOne != "" &&                                  //request is for a valid time
+            timeOne != "unrecognized time") {
+      for (var j = i+1; j < data.length; ++j) {
+        //get a comparison time and alias
+        var timeTwo = data[j][1];
+        var emailTwo = data[j][2];
+        var dupCheckTwo = data[j][7];
+        //conditions for match:  
+        if (dupCheckTwo != "duplicate" &&                     //potential match is not a duplicate
+            sheet.getRange(startRow+i,4).getValue() == "" &&  //both requests are unfilled
+            sheet.getRange(startRow+j,4).getValue() == "" &&
+            emailOne != emailTwo &&                           //not same email
+            timeOne == timeTwo &&                             //request time matches
+            checkMatrix(emailOne, emailTwo) == pickiness) {   //false means they've already met, which is the more picky condition
+          var sheet = selectMatches();
+          //paste match emails
+          sheet.getRange(firstEmptyRow,1).setValue(emailOne);
+          sheet.getRange(firstEmptyRow,2).setValue(emailTwo);
+          //paste match times
+          sheet.getRange(firstEmptyRow,3).setValue(data[i][4] + " " + data[i][5]);
+          sheet.getRange(firstEmptyRow,4).setValue(data[i][4] + " " + data[i][6]);
+          //paste date of match
+          sheet.getRange(firstEmptyRow,5).setValue(TODAY_DATE);
+          //update status on Form Responses as matched
+          sheet = selectForm();
+          sheet.getRange(startRow+i,4).setValue(TODAY_DATE);
+          sheet.getRange(startRow+j,4).setValue(TODAY_DATE);
+          //prep for next iteration
+          SpreadsheetApp.flush();
+          j = data.length;
+          ++firstEmptyRow;
+          //fill in the match on the matrix of mets (aka, the chart of chatters)
+          updateMatrix(emailOne, emailTwo);
+          updateMatrix(emailTwo, emailOne);
+        }
+      }
+    }
+  }
+}
+
+//check the matrix of mets to see if a potential match has already been made on a previous Wednesday
+function checkMatrix(emailOne, emailTwo) {
+  var sheet = selectMets();
+  var startRow = 2;
+  var data = sheet.getDataRange().getValues();
+  for (var i = 0; i < data.length; ++i) {
+    //each row represents a user's data
+    var row = data[i];
+    var user = row[1];
+    if (user == emailOne) { 
+      //set up the horizontal iteration to go through the length of the longest row
+      for (var j = 1; j < row.length-1; ++j) {
+        var prevMatch = row[j+1];
+        if(prevMatch == emailTwo) {
+          //the two have met before
+          return true;
+        }
+        if(prevMatch == "") {
+          //exit the loop if done checking user's previous matches
+          j = row.length;
+        }
+      }
+    }
+  }
+  //if we get here, a previous match between the two was not found
+  return false;
+}
+
+//update the matrix of mets to include that a user (userEmail) has met with a chatter (matchEmail)
+//(add the match email to the closest open cell to the right on the row representing the user)
+//here, we don't need to check for the match (happens above in checkMatrix)
+function updateMatrix(userEmail, matchEmail) {
+  var sheet = selectMets();
+  var startRow = 2;
+  //grab all the rows in the sheet with data, and grab all the columns out to 100
+  var data = sheet.getRange(1,1,sheet.getDataRange().getValues().length,100).getValues();
+  //var data = sheet.getDataRange().getValues();
+  var foundUser = false;
+  //var chatters = 0;  //uncomment this if you want to count total chatters for the user
+  for (var i = 0; i < data.length; ++i) {
+    //each row represents a user's data
+    var row = data[i];
+    var user = row[1];
+    if (user == userEmail) { 
+      foundUser = true; //we've found the user's row in the matrix
+      for (var j = 1; j < row.length-1; ++j) {
+        prevMatch = row[j+1];
+        if(prevMatch == "") {
+          //we note the first empty cell in the row to add the catter to the matrix
+          var spreadSheetRow = i+1;
+          var spreadSheetCol = j+2;
+          //exit the loop
+          j = row.length;
+          i = data.length;
+        } else {
+          //++chatters;  //uncomment this if you want to count total chatters for the user
+        }
+      }
+    }
+  }
+  //if the user isn't already in the matrix, prep to add them with first chatter to bottom of the matrix
+  if (foundUser == false) {
+    var spreadSheetRow = data.length+1;
+    var spreadSheetCol = 3;
+  }
+  //the actual update
+  sheet.getRange(spreadSheetRow,2).setValue(userEmail);
+  sheet.getRange(spreadSheetRow,spreadSheetCol).setValue(matchEmail);
+  var chatters = sheet.getRange(spreadSheetRow,1).getValue();  //comment this if you want to count total chatters for the user
+  ++chatters;
+  sheet.getRange(spreadSheetRow,1).setValue(chatters);
+  SpreadsheetApp.flush();
+  //call the reward function based on the user's chatter count
+  reward(userEmail,chatters);
+}
+
+//figure out who gets rewarded this week and update the Rewards tab (4th on the worksheet) accordingly
+function reward(user,chatters) {
+  sheet = selectForm();
+  var nextCoffeeDate = sheet.getRange(2,5).getValue(); //date of upcoming CoW
+  //check if the user is meeting for xth time where x is multiple of the loyalty factor (ei, every 4th time)
+  if (chatters != 0 && chatters % LOYALTY_FACTOR == 0) {
+    var sheet = selectRewards();
+    var data = sheet.getDataRange().getValues();
+    var rewarded = false;
+    for (var i = 0; i < data.length; ++i) {
+      var rewardedUser = data[i][0];
+      if (user == rewardedUser) { 
+        //double check that the user is not on the list twice
+        rewarded = true;
+        i = data.length;
+      }
+    }
+    if (rewarded == false) {
+      //add the user to the list
+      sheet.getRange(data.length+1,1).setValue(user);
+      sheet.getRange(data.length+1,2).setValue(TODAY_DATE);
+      sheet.getRange(data.length+1,3).setValue(nextCoffeeDate);
+    }
+  }
+}
+
+//sends the invites to the matched chatters as Google Calendar events
+function sendInvite() {
+  var sheet = selectMatches();
+  var startRow = firstUnsentRowMatches(); //data in row but no indicator has been sent
+  var endRow = firstEmptyRowMatches();    //no data in the row at all (the end of the sheet)
+  var data = sheet.getRange(startRow, 1, endRow-startRow+1, 7).getValues();
+  for (var i = 0; i < data.length; ++i) {
+    var row = data[i];
+    var emailAddress1 = row[0];
+    var emailAddress2 = row[1];
+    var email1Reward = checkReward(emailAddress1);
+    var email2Reward = checkReward(emailAddress2);
+    if (email1Reward == true && email2Reward == true) {
+      var desc = 'Congratulations, You both have rewards this week! ' + REWARD_PICKUP + ' Meet your chatter at Coupa at GSB.  Be sure to email your chatter directly to let them know if you cannot make it.';
+    } else if (email1Reward == true) {
+      var desc = 'Meet your chatter at Coupa at GSB. Be sure to email your chatter directly to let them know if you cannot make it. Also, congratulations, ' + emailAddress1 + ', you have a reward this week!' + REWARD_PICKUP;
+    } else if (email2Reward == true) {
+      var desc = 'Meet your chatter at Coupa at GSB. Be sure to email your chatter directly to let them know if you cannot make it. Also, congratulations, ' + emailAddress2 + ', you have a reward this week!' + REWARD_PICKUP;
+    } else {
+      var desc = 'Meet your CoW buddy at Coupa at GSB. Be sure to email your buddy directly to let them know if you cannot make it.';
+    }
+    var startTime = row[2];
+    var endTime = row[3];
+    var emailAddresses = emailAddress1 + ',' + emailAddress2; //formatted as a string with comma for calendar api
+    if(emailAddress1.indexOf("@")>-1 && emailAddress2.indexOf("@")>-1) {
+      //send out the invite
+      CalendarApp.getDefaultCalendar().createEvent('CoW (Coffee on Wednesdays)', new Date(startTime), new Date(endTime),{guests : emailAddresses, sendInvites : true, location : 'Coupa', description: desc});
+      sheet.getRange(startRow + i, 6).setValue(TODAY_DATE); 
+      SpreadsheetApp.flush();
+    } else if (emailAddress1 != "" && endTime != "") {
+      //if the email address is whack and we are on a row with data, note the exception
+      sheet.getRange(startRow + i, 6).setValue("email error");
+    }
+  }
+}
+
+function checkReward(email) {
+  var sheet = selectRewards();
+  var data = sheet.getDataRange().getValues();
+  var rewarded = false;
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] == email) {
+      rewarded = true;
+      i = data.length;
+    }
+  }
+  return rewarded;
+}
+
+////////////////////////////////////////////////////
+//these functions do not trigger on form-submit but instead trigger every Tuesday morning at midnight
+////////////////////////////////////////////////////
+
+//sends the email addresses of all the people who get rewards to a recipient (see ADMIN_EMAIL_ADDRESS at the top ^)
+function sendRewardData() {
+  var sheet = selectForm();
+  var nextCoffeeDate = sheet.getRange(2,5).getValue();
+  sheet = selectRewards();
+  var data = sheet.getDataRange().getValues();
+  //build the HTML table of what we're going to send out
+  var HTMLtable = "<table style=\"border:2px solid black;width:500\" >";  
+  for (var i = 0; i < data.length; ++i) {
+    if (data[i][0] != "") {
+      if(i % 2 === 0){
+        HTMLtable += "<font size='16'><tr><td>" + "________           " + "</td><td>" + data[i][0] + "</td></tr></font>";
+      } else {
+        HTMLtable += "<font size='16'><tr bgcolor=\"#d0eaf9\"><td>" + "________           " + "</td><td>" + data[i][0] + "</td></tr></font>";
+      }
+    }  
+  }
+  HTMLtable += "</table>";
+  var todayDate = Utilities.formatDate(TODAY_DATE, "PST", "MM/dd/yyyy");
+  //send email only if there are any students to be rewarded
+  if (data.length > 0 && REWARD_EMAIL_ADDRESS.indexOf("@")>-1) {
+    MailApp.sendEmail({  
+       to: ADMIN_EMAIL_ADDRESS,
+       subject: 'CoW Rewards for ' + todayDate,
+       htmlBody:        'Here are the email addresses of all students who get a reward on ' + todayDate + ":" + "<br>" +
+                        HTMLtable + "<br>" + 
+                        "<br>" +
+                        '-CoW, Coffee on Wednesdays' + "<br>" +
+                        '<font size="1">contact student admin at </font>' + ADMIN_EMAIL_ADDRESS
+    });
+  } else {
+      Logger.log("sendRewardDate email error");
+  }
+}
+
+//update reward data spreadsheet
+function updateRewardSS() {
+  var sheet = selectForm();
+  var nextCoffeeDate = sheet.getRange(2,5).getValue();
+  sheet = selectRewards();
+  var data = sheet.getDataRange().getValues();
+  var ssID = "1zOE4AA2KZezAM8rWNx8PHzmfFuYybnkARlp7HVCNh8s";
+  var endrow = SpreadsheetApp.openById(ssID).getActiveSheet().getDataRange().getHeight();
+  for (var i = 1; i < data.length; ++i) {
+    var row = data[i];
+    for (var j = 0; j < 3; ++j) {
+      SpreadsheetApp.openById(ssID).getActiveSheet().getRange(endrow+i,j+1).setValue(row[j]);
+    }
+  }
+}
+
+//clear all the data from the rewards sheet
+function wipeRewardData() {
+  sheet = selectRewards();
+  sheet.clear();
+  //add headers for coming week
+  sheet.getRange(1, 1).setValue("Email Address");
+  sheet.getRange(1, 2).setValue("Date Matched");
+  sheet.getRange(1, 3).setValue("Date of Reward");
+}
+
+//let any poor unfortunate souls know they didn't get a match this week
+function sendNoMatch() {
+  var todayDate = Utilities.formatDate(TODAY_DATE, "PST", "MM/dd/yyyy"); //make the date pretty
+  var sheet = selectForm();
+  var data = getNewSignups();
+  var startRow = firstNewDataRowForm();
+  for (var i = 0; i < data.length; ++i) {
+    var row = data[i];
+    var desiredTime = row[1];
+    var emailAddress = row[2];
+    var foundMatch = row[3];
+    if (foundMatch == "") { 
+      if (emailAddress.indexOf("@")>-1) {
+      //MailApp.sendEmail({
+      //    to: emailAddress,
+      //    subject: 'CoW -- No match for your request for ' + desiredTime, 
+      //    htmlBody: "So we don't have a chatter for you this week at " + desiredTime + '.' + "<br>" + 
+      //    'Sorry about that!  Please do try again next week, and we will try our best to match each of your requests.' + "<br>" +
+      //    '-CoW'
+      //    });
+      sheet.getRange(startRow + i, 4).setValue('no match ' + todayDate); 
+      SpreadsheetApp.flush();
+      } else {
+        sheet.getRange(startRow + i, 4).setValue("email error");
+      }
+    }
+  }
+}
+
+//prep the FormResponse sheet for the next week
+function clearFormResponses() {
+  var sheet = selectForm();
+  var endRow = lastNewDataRowForm();
+  //always clear starting on row 2.  never clear the headers in row 1
+  sheet.deleteRows(2, endRow);
+}
+
+
+////////////////////////////////////////////////////
+//these functions are general helpers called by others in the script
+////////////////////////////////////////////////////
+
+//grab all the signups that have not yet been processed
+function getNewSignups() {
+  var sheet = selectForm();
+  //grab from a calculated cell in the spreadsheet the last data row
+  //note: if sheet is full, startRow == endRow
+  var startRow = 2;
+  var endRow = lastNewDataRowForm();
+  if (endRow < startRow) {
+    //prevent major crashes if no data
+    endRow = startRow
+  }
+  var data = sheet.getRange(startRow, 1, endRow-startRow+1, 8).getValues();
+  return data;
+}
+
+//gets the value of the first row of new data on the Form Responses Sheet
+function firstNewDataRowForm() {
+  var sheet = selectForm();
+  if (TEST_MODE == false) {
+    var startRow = 2;
+  } else {
+    var startRow = 1000;
+  }
+  return startRow;
+}
+
+//gets the value of the last row of new data on the Form Responses Sheet
+function lastNewDataRowForm() {
+  var sheet = selectForm();
+  if (TEST_MODE == false) {
+    var endRow = sheet.getDataRange().getCell(1,1).getValue();
+  } else {
+    var endRow = sheet.getDataRange().getCell(999,1).getValue();
+  }
+  return endRow;
+}
+
+//gets the value of the first empty row on the Matches Sheet
+function firstEmptyRowMatches() {
+  var sheet = selectMatches();
+  if (TEST_MODE == false) {
+    var emptyRow = sheet.getDataRange().getCell(1,5).getValue();
+  } else {
+    var emptyRow = sheet.getDataRange().getCell(9999,5).getValue();
+  }
+  return emptyRow;
+}
+
+//gets the value of the first unsent match row on the Matches Sheet
+function firstUnsentRowMatches() {
+  var sheet = selectMatches();
+  if (TEST_MODE == false) {
+    var firstUnsentRow = sheet.getDataRange().getCell(1,6).getValue();
+  } else {
+    var firstUnsentRow = sheet.getDataRange().getCell(9999,6).getValue();
+  }
+  return firstUnsentRow;
+}
+
+//selects the Form Responses sheet
+function selectForm() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  SpreadsheetApp.setActiveSheet(sheet.getSheets()[0]);
+  var sheet = SpreadsheetApp.getActiveSheet();
+  return sheet;
+}
+
+//selects the Matrix of Mets sheet
+function selectMets() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  SpreadsheetApp.setActiveSheet(sheet.getSheets()[1]);
+  var sheet = SpreadsheetApp.getActiveSheet();
+  return sheet;
+}
+
+//selects the Matches sheet
+function selectMatches() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  SpreadsheetApp.setActiveSheet(sheet.getSheets()[2]);
+  var sheet = SpreadsheetApp.getActiveSheet();
+  return sheet;
+}
+
+//selects the Rewards sheet
+function selectRewards() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  SpreadsheetApp.setActiveSheet(sheet.getSheets()[3]);
+  var sheet = SpreadsheetApp.getActiveSheet();
+  return sheet;
+}
