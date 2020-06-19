@@ -1,5 +1,5 @@
 # publicprojects
-Here are some projects I have created for fun that I hope vieweres will find interesting or useful. Questions, implementation challenges, comments? email me: alecwalker (at) alumni.gsb.stanford.edu
+Here are some projects I have created for fun that I hope vieweres will find interesting and useful. Questions, implementation challenges, comments? email me: alecwalker (at) alumni.gsb.stanford.edu
 
 <b>CoW (Coffee on Wednesdays)</b> is an app that lets you automate scheduling mass 1-on-1 meetings within a community to foster deeper platonic personal connections. Worked really well with business school students meeting up at a campus coffee shop, and worked pretty well with a remote team during the COVID-19 pandemic meeting up on video calls. Kind of like Doodle and Calendly combined, but nobody has to leave their email client to access.
 
