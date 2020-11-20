@@ -8,5 +8,4 @@ Here are some projects I have created for fun that I hope vieweres will find int
 <b>Random Forest Visualizer</b> is an app that implements the popular data science method random forest within Microsoft Excel and Visual Basic for Applications (VBA). Working well for scientists and engineers who (A) like to visualize the intermediate steps in data science methods in order to ensure proper functioning and transparency on appliability and (B) work in industries that rely on Excel to store and manipulate data.
 
 Thanks for checking out this repository!
-
 -Alec
