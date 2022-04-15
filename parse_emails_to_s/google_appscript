@@ -1,0 +1,57 @@
+function logSubmissions() 
+{
+  //Grab emails from powr.io pertaining to new submissions
+  var threads = GmailApp.search("newer_than:1d AND in:inbox AND from:powr.io AND subject:A new pitch has been submitted to SA&E TC",0,100);
+  
+  //Collect messages from across threads
+  var arrToConvert=[];
+  for(var i = threads.length - 1; i >=0; i--) {
+    arrToConvert.push(threads[i].getMessages());   
+  }
+  var messages = [];
+  for(var i = 0; i < arrToConvert.length; i++) {
+    messages = messages.concat(arrToConvert[i]);
+  }
+
+  Logger.log(threads.length);
+  Logger.log(messages.length);
+  
+  //Open the spreadsheet
+  var spreadsheet = SpreadsheetApp.openByUrl("https://docs.google.com/spreadsheets/d/1dAgAWIRLhbFnX2_2K6092uvtSuySxnX3VJaVK3DuzDQ/edit#gid=0");
+
+  //For each email in the threads, parse the important bits
+  for(var m=0;m<messages.length;m++)
+  {
+    var text = messages[m].getPlainBody();
+    var first_name = text.match(/(?<=First Name )(.*)(?= )/)[0];
+    var last_name = text.match(/(?<=Last Name )(.*)(?= )/)[0];
+    var email_address = text.match(/(?<=Email Address )(.*)(?= )/)[0];
+    var pitch_link = text.match(/(?<=Link to your pitch \(Dropbox, Google Drive, DocSend, etc\) )(.*)(?= )/)[0];
+    var summary = text.match(/(?<=Two-sentence summary of your venture )(.*)(?= )/)[0];
+    var phone = "'" + text.match(/(?<=Phone )(.*)(?= )/)[0];
+    var how_heard = text.match(/(?<=How did you hear about us\? )(.*)(?= )/)[0];
+    var us_venture = text.match(/(?<=Is your venture based in the US\? )(.*)(?= )/)[0];
+    var stanford_venture = text.match(/(?<=Is your venture founded by a Stanford alumus\? )(.*)(?= )/)[0];
+    var source = text.match(/(?<=Submission Source: )(.*)(?= )/)[0];
+
+
+    //Check to see if the pitch link is already in there
+    var sheet = spreadsheet.getSheetByName("Applications");
+    var values = sheet.getDataRange().getValues();
+    var in_sheet = false
+    for (var i=0; i<values.length; i++) {
+      for (var j=0; j<values[0].length; j++) {
+        //Logger.log(values[i][j]);
+        if(values[i][j] == pitch_link) {
+          in_sheet = true;
+        }
+      }
+    }
+
+    //Add application to spreadsheet so long as pitch link not already in there
+    if(in_sheet == false) {
+      sheet.appendRow([first_name, last_name, email_address, pitch_link, summary, phone, how_heard, us_venture, stanford_venture, source]);
+    }
+
+  }
+}
